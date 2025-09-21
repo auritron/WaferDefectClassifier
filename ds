@@ -1,0 +1,342 @@
+[1mdiff --git a/torchload.py b/torchload.py[m
+[1mdeleted file mode 100644[m
+[1mindex 4647049..0000000[m
+[1m--- a/torchload.py[m
+[1m+++ /dev/null[m
+[36m@@ -1,336 +0,0 @@[m
+[31m-import os[m
+[31m-import time[m
+[31m-import numpy as np[m
+[31m-import matplotlib.pyplot as plt[m
+[31m-import torch[m
+[31m-import torch.nn as nn[m
+[31m-import torch.nn.functional as func[m
+[31m-import torch.optim as optim[m
+[31m-import torch.optim.lr_scheduler as lrs[m
+[31m-import torch.multiprocessing as mp[m
+[31m-from torchvision.transforms import v2[m
+[31m-from torch.utils.data import Dataset, DataLoader[m
+[31m-from sklearn.metrics import precision_score, recall_score, f1_score, confusion_matrix, ConfusionMatrixDisplay[m
+[31m-from sklearn.utils.class_weight import compute_class_weight[m
+[31m-from tqdm import tqdm[m
+[31m-[m
+[31m-#metadata[m
+[31m-seed = 69[m
+[31m-lr = 1e-3               #learning rate[m
+[31m-wd = 1e-5               #weight decay[m
+[31m-batch_size = 64[m
+[31m-class_no = 36[m
+[31m-no_of_epochs = 20[m
+[31m-[m
+[31m-#model[m
+[31m-class WaferDefectClassifier(nn.Module):[m
+[31m-    def __init__(self, classNo = class_no):[m
+[31m-        super(WaferDefectClassifier, self).__init__()[m
+[31m-        self.conv = nn.Sequential([m
+[31m-            #Layer 1[m
+[31m-            nn.Conv2d(in_channels=3, out_channels=32, kernel_size=3, padding=1),    # 56 -> 56[m
+[31m-            nn.BatchNorm2d(32),[m
+[31m-            nn.ReLU(),[m
+[31m-            nn.MaxPool2d(2),    # 56 -> 28[m
+[31m-            [m
+[31m-            #Layer 2[m
+[31m-            nn.Conv2d(in_channels=32, out_channels=64, kernel_size=3, padding=1),   # 28 -> 28[m
+[31m-            nn.BatchNorm2d(64),[m
+[31m-            nn.ReLU(),[m
+[31m-            nn.MaxPool2d(2),    # 28 -> 14[m
+[31m-[m
+[31m-            #Layer 3[m
+[31m-            nn.Conv2d(in_channels=64, out_channels=128, kernel_size=3, padding=1),  # 14 -> 14[m
+[31m-            nn.BatchNorm2d(128),[m
+[31m-            nn.ReLU(),[m
+[31m-            nn.MaxPool2d(2), #   14 -> 7[m
+[31m-        )[m
+[31m-[m
+[31m-        self.fc = nn.Sequential([m
+[31m-            nn.Flatten(),[m
+[31m-            nn.Linear(128 * 7 * 7, 128),[m
+[31m-            nn.ReLU(),[m
+[31m-            nn.Dropout(0.4),[m
+[31m-            nn.Linear(128,class_no)[m
+[31m-        )[m
+[31m-    [m
+[31m-    def forward(self, x):[m
+[31m-        x = self.conv(x)[m
+[31m-        x = self.fc(x)[m
+[31m-        return x[m
+[31m-    [m
+[31m-# transformer class (my name is optimus prime)[m
+[31m-# class TransformDataset(Dataset):[m
+[31m-#     def __init__(self, tensor, transform = None, class_transform = None):[m
+[31m-#         self.tensor = tensor[m
+[31m-#         self.transform = transform[m
+[31m-#         self.class_transform = class_transform[m
+[31m-#         self.normalize = v2.Normalize(mean=[0.5,0.5,0.5], std=[0.5,0.5,0.5])[m
+[31m-[m
+[31m-#     def __getitem__(self, index):[m
+[31m-#         x, y = self.tensor[0][index], self.tensor[1][index][m
+[31m-#         x = x.float() / 255.0[m
+[31m-#         y_index = torch.argmax(y.squeeze(0)).item()[m
+[31m-[m
+[31m-#         if self.class_transform and y_index in self.class_transform:[m
+[31m-#             x = self.class_transform[y_index](x)[m
+[31m-#         elif self.transform:[m
+[31m-#             x = self.transform(x)[m
+[31m-[m
+[31m-#         x = self.normalize(x)[m
+[31m-#         return x, y[m
+[31m-[m
+[31m-#     def __len__(self):      #return size of dataset[m
+[31m-#         return len(self.tensor[0])[m
+[31m-[m
+[31m-class TransformDataset(Dataset):[m
+[31m-    def __init__(self, tensor, transform=None):[m
+[31m-        self.tensor = tensor[m
+[31m-        self.transform = transform[m
+[31m-[m
+[31m-    def __getitem__(self, index):[m
+[31m-        x, y = self.tensor[0][index], self.tensor[1][index][m
+[31m-        x = x.float() / 255.0[m
+[31m-        if self.transform:[m
+[31m-            x = self.transform(x)[m
+[31m-        return x,y[m
+[31m-    [m
+[31m-    def __len__(self):[m
+[31m-        return len(self.tensor[0])[m
+[31m-[m
+[31m-# focal loss class[m
+[31m-class FocalLoss(nn.Module):[m
+[31m-    def __init__(self, alpha = 0.1, gamma = 0.2, weight = None):[m
+[31m-        super(FocalLoss,self).__init__()[m
+[31m-        self.alpha = alpha[m
+[31m-        self.gamma = gamma[m
+[31m-        self.weight = weight[m
+[31m-[m
+[31m-    def forward(self, inputs, targets):[m
+[31m-        ce_loss = func.cross_entropy(inputs, targets, weight = self.weight, reduction = "none")[m
+[31m-        pt = torch.exp(-ce_loss)[m
+[31m-        focal_loss = self.alpha * ((1 - pt) ** self.gamma) * ce_loss[m
+[31m-        return focal_loss.mean()[m
+[31m-[m
+[31m-#train per epoch func -[m
+[31m-def train_epoch(model, loader, device, criterion, optimizer): #training through one epoch[m
+[31m-    model.train()[m
+[31m-    total_loss = 0[m
+[31m-    correct_predicted = 0[m
+[31m-    for image, label in tqdm(loader, desc = "Training"):[m
+[31m-        image = image.to(device).float()[m
+[31m-        label = torch.argmax(label.to(device).float().squeeze(1), dim=1)[m
+[31m-        optimizer.zero_grad()[m
+[31m-        output = model(image)[m
+[31m-        loss = criterion(output, label)[m
+[31m-        loss.backward()[m
+[31m-        optimizer.step()[m
+[31m-[m
+[31m-        #loss and accuracy tracking[m
+[31m-        total_loss += loss.item()[m
+[31m-        _,predicted = torch.max(output,1)[m
+[31m-        correct_predicted += (predicted == label).sum().item()[m
+[31m-[m
+[31m-    return total_loss / len(loader), correct_predicted / len(loader.dataset)[m
+[31m-        [m
+[31m-def eval(model, loader, device, criterion):[m
+[31m-    model.eval()[m
+[31m-    total_loss = 0[m
+[31m-    correct_predicted = 0[m
+[31m-    labels = [][m
+[31m-    predicteds = [][m
+[31m-    with torch.no_grad():[m
+[31m-        for image, label in tqdm(loader, desc = "Validation"):[m
+[31m-            image = image.to(device).float()[m
+[31m-            label = torch.argmax(label.to(device).float().squeeze(1), dim=1)[m
+[31m-            output = model(image)[m
+[31m-            loss = criterion(output, label)[m
+[31m-[m
+[31m-            #loss and accuracy tracking[m
+[31m-            total_loss += loss.item()[m
+[31m-            _, predicted = torch.max(output,1)[m
+[31m-            correct_predicted += (predicted == label).sum().item()[m
+[31m-[m
+[31m-            labels.extend(label.cpu().numpy())[m
+[31m-            predicteds.extend(predicted.cpu().numpy())[m
+[31m-[m
+[31m-    precision = precision_score(labels, predicteds, average='macro', zero_division=0)[m
+[31m-    recall = recall_score(labels, predicteds, average='macro', zero_division=0)[m
+[31m-    f1 = f1_score(labels, predicteds, average='macro', zero_division=0)[m
+[31m-    [m
+[31m-    return total_loss / len(loader), correct_predicted / len(loader.dataset), precision, recall, f1, labels, predicteds[m
+[31m-[m
+[31m-# run func[m
+[31m-def run():[m
+[31m-    [m
+[31m-    #check for cuda device[m
+[31m-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")[m
+[31m-    print(torch.cuda.is_available())[m
+[31m-    print(device)[m
+[31m-[m
+[31m-    #load data[m
+[31m-    image_data = torch.load("C:/Users/Auritro Nath/WaferDefectAnalysis/wafer_data/wafer_tensors.pt", map_location=torch.device('cpu'))[m
+[31m-    label_data = torch.load("C:/Users/Auritro Nath/WaferDefectAnalysis/wafer_data/label_wm.pt", map_location=torch.device('cpu'))[m
+[31m-[m
+[31m-    #load dataset into python[m
+[31m-    index_list = torch.randperm(len(image_data),generator=torch.Generator().manual_seed(seed))[m
+[31m-[m
+[31m-    image_data = image_data[index_list][m
+[31m-    label_data = label_data[index_list][m
+[31m-[m
+[31m-    #split into test, train, and val[m
+[31m-    tr_size = int(len(image_data) * 0.8)[m
+[31m-    test_size = int(len(image_data) * 0.1)[m
+[31m-    val_size = len(image_data) - (test_size + tr_size)[m
+[31m-[m
+[31m-    tr_image = image_data[:tr_size][m
+[31m-    tr_label = label_data[:tr_size][m
+[31m-    test_image = image_data[:test_size][m
+[31m-    test_label = label_data[:test_size][m
+[31m-    val_image = image_data[:val_size][m
+[31m-    val_label = label_data[:val_size][m
+[31m-    [m
+[31m-    #transforms[m
+[31m-    transform = v2.Compose([[m
+[31m-        v2.ToDtype(torch.float32, scale=True),[m
+[31m-        v2.RandomVerticalFlip(0.5),[m
+[31m-        v2.RandomHorizontalFlip(0.5),[m
+[31m-        v2.RandomAffine(degrees=12.5, translate=(0.05, 0.05)),[m
+[31m-        v2.Normalize(mean=[0.5,0.5,0.5], std=[0.5,0.5,0.5])           [m
+[31m-    ])[m
+[31m-[m
+[31m-    # class specific transforms[m
+[31m-    # loc_transform = v2.Compose([    #loc[m
+[31m-    #     v2.RandomRotation(10),[m
+[31m-    #     v2.RandomHorizontalFlip(0.5),[m
+[31m-    # ])[m
+[31m-    [m
+[31m-    # scratch_transform = v2.Compose([[m
+[31m-    #     v2.RandomRotation(5),[m
+[31m-    #     v2.RandomAffine(degrees=7.5, translate=(0.02, 0.02), shear = 5),[m
+[31m-    #     v2.RandomResizedCrop(size=(56,56),scale=[0.9,1]),[m
+[31m-    # ])[m
+[31m-    [m
+[31m-    # edge_transform = v2.Compose([[m
+[31m-    #     v2.RandomRotation(12.5),[m
+[31m-    #     v2.RandomHorizontalFlip(0.5),[m
+[31m-    # ])[m
+[31m-    [m
+[31m-    # class_transforms = {[m
+[31m-    #     0: edge_transform,      #C+EL[m
+[31m-    #     1: edge_transform,      #C+EL+L[m
+[31m-    #     4: loc_transform,       #C+ER+L[m
+[31m-    #     7: loc_transform,       #C+L+EL+S[m
+[31m-    #     8: scratch_transform,   #C+L+ER+S[m
+[31m-    #     9: scratch_transform,   #C+L+S[m
+[31m-    #     12: edge_transform,     #D+EL[m
+[31m-    #     14: edge_transform,     #D+EL+S[m
+[31m-    #     17: scratch_transform,  #D+ER+S[m
+[31m-    #     19: loc_transform,      #D+L+EL+S[m
+[31m-    #     20: loc_transform,      #D+L+ER+S[m
+[31m-    #     21: loc_transform,      #D+L+S[m
+[31m-    #     25: scratch_transform,  #EL+L+S[m
+[31m-    #     26: edge_transform,     #EL+S[m
+[31m-    #     29: edge_transform,     #Edge-Loc[m
+[31m-    #     32: loc_transform,      #Loc[m
+[31m-    #     35: scratch_transform,  #Scratch[m
+[31m-    # }[m
+[31m-[m
+[31m-    # dataset tranformation[m
+[31m-    trans_tr_data = TransformDataset((tr_image, tr_label), transform=transform)  [m
+[31m-    trans_test_data = TransformDataset((test_image, test_label), transform=v2.Normalize(mean=[0.5,0.5,0.5], std=[0.5,0.5,0.5]))[m
+[31m-    trans_val_data = TransformDataset((val_image, val_label), transform=v2.Normalize(mean=[0.5,0.5,0.5], std=[0.5,0.5,0.5]))[m
+[31m-[m
+[31m-    # load batches[m
+[31m-    tr_batch = DataLoader(trans_tr_data, batch_size = batch_size, num_workers = min(4, os.cpu_count() or 1), pin_memory=True, shuffle=True)[m
+[31m-    test_batch = DataLoader(trans_test_data, batch_size = batch_size, num_workers = min(4, os.cpu_count() or 1), pin_memory=True, shuffle=False)[m
+[31m-    val_batch = DataLoader(trans_val_data, batch_size = batch_size, num_workers = min(4, os.cpu_count() or 1), pin_memory=True, shuffle=False)[m
+[31m-[m
+[31m-    # class weighting[m
+[31m-    targets = torch.argmax(tr_label.squeeze(1), dim=1,).numpy()[m
+[31m-    class_weights = torch.tensor(compute_class_weight(class_weight='balanced', classes=np.unique(targets), y=targets), dtype=torch.float).to(device)[m
+[31m-[m
+[31m-    # model and optimizer[m
+[31m-    model = WaferDefectClassifier().to(device)[m
+[31m-    #criterion = FocalLoss(weight = class_weights)[m
+[31m-    criterion = nn.CrossEntropyLoss(weight=class_weights, label_smoothing=0.05)[m
+[31m-    optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=wd)[m
+[31m-    warmup = lrs.LinearLR(optimizer, start_factor=0.05, total_iters=3)[m
+[31m-    cosine = lrs.CosineAnnealingLR(optimizer, T_max=no_of_epochs-3)[m
+[31m-    scheduler = lrs.SequentialLR(optimizer, schedulers=[warmup,cosine], milestones=[3])[m
+[31m-[m
+[31m-    #training loop[m
+[31m-    start_time = time.time()[m
+[31m-[m
+[31m-    #metrics tracking[m
+[31m-    l_tr_loss, l_val_loss, l_tr_acc, l_val_acc, l_prec, l_rec, l_f1 = [np.zeros(no_of_epochs) for i in range(7)][m
+[31m-[m
+[31m-    for epoch in range(no_of_epochs):[m
+[31m-        tr_loss, tr_acc = train_epoch(model, tr_batch, device, criterion, optimizer)[m
+[31m-        val_loss, val_acc, precision, recall, f1, labels, predicteds = eval(model, val_batch, device, criterion)[m
+[31m-        scheduler.step()[m
+[31m-[m
+[31m-        # add metric[m
+[31m-        l_tr_loss[epoch] = tr_loss[m
+[31m-        l_val_loss[epoch] = val_loss[m
+[31m-        l_tr_acc[epoch] = tr_acc[m
+[31m-        l_val_acc[epoch] = val_acc[m
+[31m-        l_prec[epoch] = precision[m
+[31m-        l_rec[epoch] = recall[m
+[31m-        l_f1[epoch] = f1[m
+[31m-[m
+[31m-        print(f"\nEpoch no.: {epoch+1}")[m
+[31m-        print(f"Current LR: {scheduler.get_last_lr()[0]:.6f}")[m
+[31m-        print(f"Train loss: {tr_loss:.6f}")[m
+[31m-        print(f"Val loss: {val_loss:.6f}")[m
+[31m-        print(f"Train accuracy: {tr_acc * 100:.2f}%")[m
+[31m-        print(f"Val accuracy: {val_acc * 100:.2f}%")[m
+[31m-        print(f"Precision score: {precision:.4f}")[m
+[31m-        print(f"Recall score: {recall:.4f}")[m
+[31m-        print(f"F1 score: {f1:.4f}\n")[m
+[31m-        print("-" * 40)[m
+[31m-[m
+[31m-    #hasta la vista, baby![m
+[31m-    end_time = time.time()[m
+[31m-    print(f"Time taken: {end_time - start_time:.3f} seconds")[m
+[31m-[m
+[31m-    #plot graph[m
+[31m-    plt.plot(range(1, no_of_epochs + 1), l_tr_loss, label="Train Loss")[m
+[31m-    plt.plot(range(1, no_of_epochs + 1), l_val_loss, label="Validation Loss")[m
+[31m-    plt.plot(range(1, no_of_epochs + 1), l_tr_acc, label="Train Accuracy")[m
+[31m-    plt.plot(range(1, no_of_epochs + 1), l_val_acc, label="Validation Accuracy")[m
+[31m-    plt.plot(range(1, no_of_epochs + 1), l_prec, label="Precision")[m
+[31m-    plt.plot(range(1, no_of_epochs + 1), l_rec, label="Recall")[m
+[31m-    plt.plot(range(1, no_of_epochs + 1), l_f1, label="F1")[m
+[31m-    plt.title(f"Training and validation scores for {no_of_epochs} epochs")[m
+[31m-    plt.xlabel("Epoch") [m
+[31m-    plt.ylabel("Metric")[m
+[31m-    plt.legend()[m
+[31m-    plt.show()[m
+[31m-[m
+[31m-    #confusion matrix[m
+[31m-    cm = confusion_matrix(labels, predicteds)[m
+[31m-    mispreds = [][m
+[31m-[m
+[31m-    for i in range(cm.shape[0]):[m
+[31m-        for j in range(cm.shape[1]):[m
+[31m-            if i != j and cm[i][j] != 0:[m
+[31m-                mispreds.append((i, j, cm[i][j]))[m
+[31m-[m
+[31m-    # Sort by decreasing[m
+[31m-    mispreds.sort(key=lambda x: x[2], reverse=True)[m
+[31m-[m
+[31m-    print("Most frequent misclassifications (True Class → Predicted Class):")[m
+[31m-    for true_cls, pred_cls, count in mispreds:[m
+[31m-        print(f"Class {true_cls} -> Class {pred_cls}: {count} times")[m
+[31m-[m
+[31m-    #display confusion matrix[m
+[31m-    disp = ConfusionMatrixDisplay(confusion_matrix=cm)[m
+[31m-    disp.plot(xticks_rotation='vertical')[m
+[31m-    plt.title("Validation Set Confusion Matrix")[m
+[31m-    plt.show()[m
+[31m-[m
+[31m-#run[m
+[31m-if __name__ == "__main__":[m
+[31m-    mp.freeze_support()[m
+[31m-    run()[m
